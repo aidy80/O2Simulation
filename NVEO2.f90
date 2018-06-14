@@ -47,6 +47,8 @@ program nveSim
     real(dp) :: vOld ![m/s] Temp variable for velocity
     real(dp) :: Fmag ![N] Used to hold the magnitude of force btwn two atoms
     real(dp) :: kineticEnergy ![J] The total kinetic energy of the system
+    real(dp) :: addedKE ![J] Sum used to calc KE. Used to avoid     
+                        !numerical percision issues
 
     !Used to time simulation
     real :: start_time
@@ -65,8 +67,8 @@ program nveSim
     real(dp), dimension(:, :, :), allocatable :: pStore
     real(dp), dimension(:, :, :), allocatable :: orientStore
     integer :: nCorr = 0!Used to count the number of times Cvv is added to 
-    integer :: nCorr_MSD = 0!USed to count the number of times MSD is added to 
-    integer :: nCorr_Rot = 0!USed to count the number of times CvvRot is added to 
+    integer :: nCorr_MSD = 0!Used to count the number of times MSD is added to 
+    integer :: nCorr_Rot = 0!Used to count the number of times CvvRot is added to 
     real(dp) :: diffusionCoeff = 0!Diffusion coefficient to be calcualted
 
     !Iterators
@@ -95,7 +97,7 @@ program nveSim
     real(dp) :: cutoffSq ![m^2] The cutoff radius squared
     real(dp) :: twentyFourEps = 24.0 * epsilon ![J] Epsilon*24. 
                                                !        Used for optimization
-    integer, parameter :: numSteps = 12000 !Number of timesteps in the program
+    integer, parameter :: numSteps = 1000 !Number of timesteps in the program
 
     integer :: convergeCount = 0 !Counts number of iterations
     logical :: hasConverge = .false. !Used in iterative while loop
@@ -198,6 +200,10 @@ program nveSim
     do i = 1, CvvStep
         Cvv(i) = 0.0D0
     end do
+    
+    do i = 1, CvvStep
+        CvvRot(i) = 0.0D0
+    end do
 
     do i = 1, MSDStep
         MSD(i) = 0.0D0
@@ -264,6 +270,7 @@ program nveSim
                             end do
                         end if
 
+                        !Add current position information to g(r) data
                         currIndex = Int(sqrt(distanceSq)/delR) + 1
                         bins(currIndex) = bins(currIndex) + 2
                     end do
@@ -325,8 +332,6 @@ program nveSim
                     if (convergeCount > 500) then
                         print *, "Did not converge"
                         hasConverge = .true.
-                    else
-                        !print *, "Did converge"
                     end if
                 end if
             end do
@@ -336,18 +341,26 @@ program nveSim
 
             !Update velocity baseed on changed velocity and calc KE 
             !post-bondlength adjustments
+            addedKE = 0.0
             do l = 1, numAtomsPerMolecule
                 do k = 1, numDimensions
+                    vOld = vel(m,l,k)
                     vel(m,l,k) = (pos(m,l,k) - oldPos(m,l,k)) / timeStep
-                    kineticEnergy = kineticEnergy + 0.5 * &
+                    vel(m,l,k) = 0.5 * (vOld + vel(m,l,k))
+                    addedKE = addedKE + 0.5 * &
                               &(0.5 * (oldVel(m,l,k) + vel(m,l,k)))**2 * oMass 
                 end do
             end do
+
+            kineticEnergy = kineticEnergy + addedKE
         end do
 
         !Find the kinetic energy of the system and 
         !the total energy of the system
         totEnergy = Epot + kineticEnergy
+
+        !print *, "currTemp: ", (kineticEnergy * 2.0D0) / &
+        !                                    &(5.0 * real(numMolecules) * Bolz)
 
         !Write energy information to files
         write(91, *) (timestep * real(p)), totEnergy
@@ -356,7 +369,7 @@ program nveSim
 
         call TCF(p, Cvv, nCorr, vStore, vel)
         call Calc_MSD(p, MSD, nCorr_MSD, pStore, pos)
-        call TCFRot(p, Cvv, nCorr_Rot, orientStore, pos)
+        call TCFRot(p, CvvRot, nCorr_Rot, orientStore, pos)
 
         !Output position and velocities for the trajectory file
         if (mod(p, numTrajSteps) == 0) then
@@ -408,9 +421,7 @@ program nveSim
     !Write information about the TCF
     CvvOne = Cvv(1)/real(nCorr)
     do m = 1, CvvStep
-        if (m < 200) then
-            write(96, *) (real(m) * timestep) * 1e12, (Cvv(m)/real(nCorr)) / CvvOne
-        end if
+        write(96, *) (real(m) * timestep) * 1e12, (Cvv(m)/real(nCorr)) / CvvOne
         diffusionCoeff = diffusionCoeff + (Cvv(m) / real(nCorr)) * timestep
     end do
     print *, "DiffusionCoefficient: ", diffusionCoeff * 1e4
@@ -418,9 +429,7 @@ program nveSim
     !Write information about the TCF
     CvvOneRot = CvvRot(1)/real(nCorr_Rot)
     do m = 1, CvvStep
-        if (m < 200) then
-            write(99, *) (real(m) * timestep) * 1e12, (CvvRot(m)/real(nCorr_Rot)) / CvvOneRot
-        end if
+        write(99, *) (real(m) * timestep) * 1e12, (CvvRot(m)/real(nCorr_Rot)) / CvvOneRot
     end do
 
     !Write information about the MSD
@@ -434,7 +443,7 @@ program nveSim
         rLower = real(m - 1) * delR    
         rUpper = rLower + delR
         shellVol = sphereConst * (rUpper ** 3 - rLower ** 3)
-        write(97, *) (rlower + delR * 0.5) / sigma, real(bins(m)) / (real(numSteps) * &
+        write(97, *) (rlower + delR * 0.5)*1E9, real(bins(m)) / (real(numSteps) * &
                                                     &real(numAtoms) * shellVol)
     end do
 
@@ -587,7 +596,6 @@ contains
                                             !keep sum such that each dot product
                                             !is successfully added, then
                                             !this sum is added to the Cvv at the end
-
         integer :: index0
         integer :: currIndex
         integer :: m,l,k,q
@@ -628,11 +636,11 @@ contains
 
     !Calculate the velocity TCF for the simulation at the current step add it 
     !to the running sum array Cvv
-    subroutine TCFRot(step, CvvRot, nCorr, orientStore, pos)
+    subroutine TCFRot(step, CvvRot, nCorr_Rot, orientStore, pos)
         implicit none
 
         integer, intent(in) :: step
-        integer, intent(inout) :: nCorr
+        integer, intent(inout) :: nCorr_Rot
         real, dimension(CvvStep), intent(inout) :: CvvRot
         real, dimension(numMolecules, numDimensions, CvvStep), intent(inout) :: orientStore
         real, dimension(numMolecules, numAtomsPerMolecule, numDimensions), intent(in) :: pos
@@ -643,7 +651,10 @@ contains
                                             !this sum is added to the Cvv at the end
 
         real(dp), dimension(numDimensions) :: orientV0
+        real(dp) :: orientMagt
+        real(dp) :: orientMag0
         real(dp), dimension(numDimensions) :: orientVt
+        real(dp) :: dumr
         integer :: index0
         integer :: currIndex
         integer :: m,l,k,q
@@ -670,11 +681,19 @@ contains
                 orientV0(1) = orientStore(m,1,index0)
                 orientV0(2) = orientStore(m,2,index0)
                 orientV0(3) = orientStore(m,3,index0)
+                orientMag0 = sqrt(dot(orientV0, orientV0))
+                orientV0(1) = orientV0(1) / orientMag0
+                orientV0(2) = orientV0(2) / orientMag0
+                orientV0(3) = orientV0(3) / orientMag0
                 do q = 1, CvvStep
                     currIndex = mod(q - 1 + step, CvvStep) + 1
                     orientVt(1) = orientStore(m,1,currIndex)
                     orientVt(2) = orientStore(m,2,currIndex)
                     orientVt(3) = orientStore(m,3,currIndex)
+                    orientMagt = sqrt(dot(orientVt, orientVt))
+                    orientVt(1) = orientVt(1) / orientMagt
+                    orientVt(2) = orientVt(2) / orientMagt
+                    orientVt(3) = orientVt(3) / orientMagt
                     sum(q) = sum(q) + 0.5 * (3 * dot(orientV0, orientVt)**2 - 1)
                 end do
             end do
@@ -711,9 +730,14 @@ contains
         currIndex = mod(step - 1, MSDStep) + 1 
 
         !Store the position of each molecule
-        do m = 1, numAtoms
+        do m = 1, numMolecules
             do k = 1, numDimensions
-                pStore(m,k,currIndex) = 0.5 * (pos(m,1,k) + pos(m,2,k))
+                if (k == 3) then
+                    !print *, "pos1: ", pos(m,1,k)
+                    !print *, "pos2: ", pos(m,2,k), "m:", m
+                end if
+                pStore(m, k, currIndex) = 0.5 * (pos(m, 1, k) + pos(m, 2, k))
+                !print *, "pStore:",pStore(m,k,currIndex), "k = ", k
             end do
         end do
 
@@ -730,6 +754,7 @@ contains
                     end do
                 end do
             end do
+            !print *, "sum(1) MSD: ", sum(1)
         end if
 
         !Add the summed value to the total MSD
