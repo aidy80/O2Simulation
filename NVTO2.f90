@@ -108,7 +108,7 @@ program nvtSim
 
     !Open file containing position and velocity information 
     !about argon atoms in the cubic boundary from argon.gro
-    open(unit=11, file='oxygen.gro') 
+    open(unit=11, file='oxygenInit.gro') 
     open(unit=91, file='NVTO2_totEnergy.dat')
     open(unit=92, file='NVTO2_potentialEnergy.dat')
     open(unit=93, file='NVTO2_kineticEnergy.dat')
