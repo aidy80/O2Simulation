@@ -51,24 +51,22 @@ program oxygenBox
     !Create a random seed for random number generation. 
     !This seed will be modifed upon each iteration using scale, increment, max
     integer :: seed = 1010
-    integer :: seedMax = 5070
-    integer :: seedScale = 57675
-    integer :: seedIncrement = 6850
 
-    !If you want to use rand() 
+    !Initialize the use of rand()
     call random_seed(size = seed)
     call srand(seed)
 
-    dmdx = dim / xNum
-    dmdy = dim / yNum
-    dmdz = dim / zNum
+    !Calc distance between molecules
+    dmdx = dim / real(xNum)
+    dmdy = dim / real(yNum)
+    dmdz = dim / real(zNum)
 
     !Open a file for writing argon atom information formatted for gromacs
-    open(unit = 1, file='oxygen.gro')
+    open(unit = 11, file='oxygenInit.gro')
 
     !The file's header information
-    write(1, *) "MD of 500 diatomic oxygen molecules, t = 0.0ns"
-    write(1, 30) numMolecules * atomsPerMolecule
+    write(11, *) "MD of 500 diatomic oxygen molecules, t = 0.0ns"
+    write(11, 30) numMolecules * atomsPerMolecule
 
     !Treating the box as a 3D grid, loop through it and create equally 
     !spaced atoms throughout.
@@ -85,16 +83,14 @@ program oxygenBox
                 !Create a velocity vector in a random direction with 
                 !magnitude vrms (nm/ps)
                 do i = 1, 3
-                    seed = mod(seed * seedScale + seedIncrement, seedMax) 
-                    vel(i) = vrms * ((seed / seedMax) - 0.5)
+                    vel(i) = 2 * rand() - 1
                     orientation(i) = (bondLength / 2) * rand()
                 end do
 
                 orientMag = sqrt(orientation(1)**2 + orientation(2)**2 + orientation(3)**2)
-                orientation(1) = (real(orientation(1)) / orientMag) * (bondLength / 2)
-                orientation(2) = (real(orientation(2)) / orientMag) * (bondLength / 2)
-                orientation(3) = (real(orientation(3)) / orientMag) * (bondLength / 2)
-                print *, orientation(1)
+                orientation(1) = (real(orientation(1)) / orientMag) * (bondLength / 2.0)
+                orientation(2) = (real(orientation(2)) / orientMag) * (bondLength / 2.0)
+                orientation(3) = (real(orientation(3)) / orientMag) * (bondLength / 2.0)
 
                 !Normalize the velocity vector
                 velMag = sqrt(vel(1)**2 + vel(2)**2 + vel(3)**2)
@@ -111,12 +107,12 @@ program oxygenBox
 
                 !Output the position and velocity information for the 
                 !most-recently-created atom
-                write(1, 10) abs(numMolecules + 1 - currNumMolecules), "OXY", "O1", &
+                write(11, 10) abs(numMolecules + 1 - currNumMolecules), "OXY", "O1", &
                              &atomicCount, pos(1) + orientation(1), pos(2) + &
                              &orientation(2), pos(3) + orientation(3), &
                              &vel(1), vel(2), vel(3)
                 atomicCount = atomicCount + 1
-                write(1, 10) abs(numMolecules + 1 - currNumMolecules), "OXY", "O2", &
+                write(11, 10) abs(numMolecules + 1 - currNumMolecules), "OXY", "O2", &
                              &atomicCount, pos(1) - orientation(1), pos(2) - &
                              &orientation(2), pos(3) - orientation(3), &
                              &vel(1), vel(2), vel(3)
@@ -131,13 +127,13 @@ program oxygenBox
     100 continue
 
     !Output the box's dimensions
-    write(1, 20) dim, dim, dim
+    write(11, 20) dim, dim, dim
 
     !Format information for the outputted file
     30 format(I5)
     20 format(F10.5, F10.5, F10.5)
     10 format(i5,2a5,i5,3f8.3,3f8.3)
 
-    close(unit = 1)
+    close(unit = 11)
 
 end program oxygenBox

@@ -1,13 +1,13 @@
 !Aidan Fike
 !March 2, 2017
 !Program to simulate diatomic oxygen molecules in a cube based on lennard jones 
-!iteractions. Program will simulate molecules for 100,000 4fs timesteps in an 
+!iteractions. Program will simulate molecules for 50,000 4fs timesteps in an 
 !NVE ensemble
 
 program nveSim
     implicit none
 
-    integer, parameter :: dp = kind(1.0)!Give reals double precision
+    integer, parameter :: dp = selected_real_kind(15, 307)!Give reals double precision
 
     integer, parameter :: numAtomsPerMolecule = 2 !Number of atoms in each Oxygen 
     integer :: numMolecules !Number of molecules in this simulation
@@ -15,7 +15,8 @@ program nveSim
 
     !Position and Velocity information about atoms in the system 
     real(dp), dimension(:, :, :), allocatable :: pos, vel !pos: [m], vel: [m/s]
-    real(dp), dimension(:, :, :), allocatable :: oldPos, oldVel !oldPos: [m]
+    real(dp), dimension(:, :, :), allocatable :: oldPos, oldVel!oldPos: [m]
+                                                               !oldVel: [m/s] 
 
     !Force exerted on atoms at a given timestep
     real(dp), dimension(:, :, :), allocatable :: force ![N] 
@@ -43,6 +44,8 @@ program nveSim
     real(dp) :: Epot ![J] Potential of the entire system
     real(dp) :: totEnergy ![J] Total energy of the system
     real(dp) :: potential ![J] the total potential energy of the system
+    real(dp) :: potentialSum ![J] the total potential energy of the system
+    real(dp) :: oldPotential ![J] the total potential energy of the system
     real(dp) :: vSQ ![(m/s)^2] Square velocity of a given atom
     real(dp) :: vOld ![m/s] Temp variable for velocity
     real(dp) :: Fmag ![N] Used to hold the magnitude of force btwn two atoms
@@ -77,9 +80,9 @@ program nveSim
 
     !Constants
     real(dp), parameter :: oMass = 2.66E-26 ![kg] Mass of an oxygen atom
-    real(dp),parameter :: invOMass = 1 / oMass
+    real(dp),parameter :: invOMass = 1.0 / oMass
     real(dp), parameter :: Bolz = 1.38064852E-23 ![J/K] Boltzmann constant
-    real(dp), parameter :: epsilon = 48 * Bolz![J] Minimum in the 
+    real(dp), parameter :: epsilon = 48.0 * Bolz![J] Minimum in the 
                                                  !    Lennard Jones equation
     real(dp), parameter :: sigma = 3.006E-10 ![m]. Constant in the Lennard 
                                             !     Jones equation
@@ -97,15 +100,17 @@ program nveSim
     real(dp) :: cutoffSq ![m^2] The cutoff radius squared
     real(dp) :: twentyFourEps = 24.0 * epsilon ![J] Epsilon*24. 
                                                !        Used for optimization
-    integer, parameter :: numSteps = 1000 !Number of timesteps in the program
+    integer, parameter :: numSteps = 50000 !Number of timesteps in the program
 
     integer :: convergeCount = 0 !Counts number of iterations
     logical :: hasConverge = .false. !Used in iterative while loop
 
     integer, parameter :: zeroMomentTimeStep = 100 !Number of timesteps 
                                                    !between momentum-zeroing
-    integer, parameter :: numTrajSteps = 10 !Number of timesteps between 
-                                            !trajectory outputs to .ttr file
+    integer, parameter :: numTrajSteps = 100 !Number of timesteps between 
+                                             !trajectory outputs to .ttr file
+
+    real(dp) :: dumr !Dummy variable used for testing
 
     !Set up data for finding g(r)
     real(dp), parameter :: delR = 0.003e-9
@@ -129,6 +134,7 @@ program nveSim
     !Open file containing position and velocity information 
     !about argon atoms in the cubic boundary from argon.gro
     open(unit=11, file='NVTO2_final.gro') 
+    open(unit=90, file='NVEO2_temperature.dat')
     open(unit=91, file='NVEO2_totEnergy.dat')
     open(unit=92, file='NVEO2_potentialEnergy.dat')
     open(unit=93, file='NVEO2_kineticEnergy.dat')
@@ -179,13 +185,13 @@ program nveSim
     end do
     
     !Set up information about g(r)
-    rho = numAtoms / (dim(1) ** 3)
+    rho = numAtoms / (dim(1)**3)
     sphereConst = 4.0D0 * pi * rho / 3.0D0
     numBins = ANint((dim(1)*1.733)/(2.0 * delR)) + 1
     numFullBins = ANint(dim(1)/(2.0*delR))
 
     !Set the cutoff for LJ interation to 1/2 box size
-    cutoff = dim(1)/2
+    cutoff = dim(1)/2.0
     cutoffSq = cutoff**2
 
     allocate(bins(numBins))
@@ -214,6 +220,10 @@ program nveSim
     end do
 
     do p = 1, numSteps
+        if (mod(p,100) == 0) then
+            print *, p
+        end if
+
         !Init force vectors to zero
         call initZero(force, numAtoms, numDimensions)
 
@@ -229,6 +239,7 @@ program nveSim
         !Compute Force between each pair of atoms if their distance is below
         !the cutoff radius. Each pair is evaluated only once
         do i = 1, numMolecules - 1
+            potentialSum = 0.0
             do m = 1, numAtomsPerMolecule
                 do j = i + 1, numMolecules
                     do l = 1, numAtomsPerMolecule
@@ -251,20 +262,27 @@ program nveSim
                         !current pair of atoms and add it to the current 
                         !potential energy sum
                         potential = fourEps * (sigmaDistTwelve - sigmaDistSix)
-                        Epot = Epot + potential
+                        potentialSum = potentialSum + potential
 
                         !Calculate the resulting force on the current two atoms 
                         !based on the lennard jones potential between them. Calculated 
                         !using the negative gradient
-                        Fmag = twentyFourEps * (2 * sigmaDistTwelve - sigmaDistSix)
+                        Fmag = twentyFourEps * (2.0 * sigmaDistTwelve - sigmaDistSix)
 
                         !If the distance between the two atoms is below the cutoff, 
                         !calculate the force exerted on each of them based on the 
                         !lennard jones potential
                         if (distanceSq < cutoffSq) then
                             do k = 1, numDimensions
+                                dumr = force(i,m,k)
                                 force(i, m, k) = force(i, m, k) + &
                                                     &Fmag * (distance(k) / distanceSq)
+                                if((dumr - force(i,m,k)) == 0) then
+                                    !print *, "Force problem", force(i,m,k), Fmag * (distance(k) / distanceSq)
+                                else 
+                                    !print *, "No problem", force(i,m,k), Fmag * (distance(k) / distanceSq)
+                                end if
+
                                 force(j, l, k) = force(j, l, k) - &
                                                     &Fmag * (distance(k) / distanceSq)
                             end do
@@ -276,6 +294,13 @@ program nveSim
                     end do
                 end do
             end do
+            oldPotential = Epot
+            Epot = Epot + potentialSum
+            if ((oldPotential - Epot) == 0) then
+                !print *, "Did not work: ", Epot, potentialSum
+            else
+                !print *, "Did add:", Epot, potentialSum
+            end if
         end do
 
         !Use the leap-frog verlet algorithm to calculate new position and 
@@ -344,11 +369,9 @@ program nveSim
             addedKE = 0.0
             do l = 1, numAtomsPerMolecule
                 do k = 1, numDimensions
-                    vOld = vel(m,l,k)
                     vel(m,l,k) = (pos(m,l,k) - oldPos(m,l,k)) / timeStep
-                    vel(m,l,k) = 0.5 * (vOld + vel(m,l,k))
-                    addedKE = addedKE + 0.5 * &
-                              &(0.5 * (oldVel(m,l,k) + vel(m,l,k)))**2 * oMass 
+                    !vel(m,l,k) = 0.5 * (oldVel(m,l,k) + vel(m,l,k))
+                    addedKE = addedKE + 0.5 * (0.5*(oldVel(m,l,k) + vel(m,l,k)))**2 * oMass 
                 end do
             end do
 
@@ -359,14 +382,16 @@ program nveSim
         !the total energy of the system
         totEnergy = Epot + kineticEnergy
 
-        !print *, "currTemp: ", (kineticEnergy * 2.0D0) / &
-        !                                    &(5.0 * real(numMolecules) * Bolz)
 
-        !Write energy information to files
+        !Write energy and temperature information to files
+        write(90, *) timestep * real(p), &
+                    &(kineticEnergy * 2.0D0) / (5.0 * real(numMolecules) * Bolz)
         write(91, *) (timestep * real(p)), totEnergy
         write(92, *) (timestep * real(p)), Epot
         write(93, *) (timestep * real(p)), kineticEnergy
 
+        !Call analysis functions to calculate TCF for velocity, 
+        !rotation, and distance
         call TCF(p, Cvv, nCorr, vStore, vel)
         call Calc_MSD(p, MSD, nCorr_MSD, pStore, pos)
         call TCFRot(p, CvvRot, nCorr_Rot, orientStore, pos)
@@ -403,15 +428,11 @@ program nveSim
                 avgPos(2) = 0.5 * (pos(m,1,2) + pos(m,2,2))
                 avgPos(3) = 0.5 * (pos(m,1,3) + pos(m,2,3))
                 write(95, 10) m, "OXY", "O1", 2*(m-1) + 1, &
-                    &(pos(m,1,1) * 1E9),& 
-                    &(pos(m,1,2) * 1E9),&
-                    &(pos(m,1,3) * 1E9),&
+                    &(pos(m,1,1) * 1E9),(pos(m,1,2) * 1E9), (pos(m,1,3) * 1E9),&
                     &vel(m,1,1) * 1E-3, vel(m,1,2) * 1E-3, vel(m,1,3) * 1E-3
 
                 write(95, 10) m, "OXY", "O2", 2*(m-1) + 2, &
-                    &(pos(m,2,1) * 1E9),&
-                    &(pos(m,2,2) * 1E9),&
-                    &(pos(m,2,3) * 1E9),&
+                    &(pos(m,2,1) * 1E9),(pos(m,2,2) * 1E9),(pos(m,2,3) * 1E9),&
                     &vel(m,2,1) * 1E-3, vel(m,2,2) * 1E-3, vel(m,2,3) * 1E-3
             end do
             write(95, 20) dim(1) * 1E9, dim(1) * 1E9, dim(1) * 1E9
@@ -434,8 +455,7 @@ program nveSim
 
     !Write information about the MSD
     do m = 1, MSDStep
-        write(98, *) (real(m) * timestep) * 1e12, &
-                                &(MSD(m)/real(nCorr_MSD)) * 1e20
+        write(98, *) (real(m) * timestep) * 1e12, (MSD(m)/real(nCorr_MSD)) * 1e20
     end do
 
     !Write information about g(r), the radial distribution function
@@ -450,12 +470,15 @@ program nveSim
     !Free all heap memory
     deallocate(pos)
     deallocate(vel)
+    deallocate(oldPos)
+    deallocate(oldVel)
     deallocate(force)
     deallocate(vStore)
     deallocate(pStore)
     deallocate(orientStore)
     deallocate(bins)
 
+    close (unit=90)
     close (unit=91)
     close (unit=92)
     close (unit=93)
@@ -467,9 +490,8 @@ program nveSim
     close (unit=99)
 
     CALL cpu_time(end_time)
-    print *, "Time usage:", (end_time - start_time)/60, " minutes"
-    print *, "Time usage:", (end_time - start_time) - &
-                                       &(end_time - start_time)/60, " seconds"
+    print *, "Time usage:", (end_time - start_time)/60.0, " minutes", &
+                            &mod((end_time - start_time),60.0), " seconds"
 
     30 format(I5)
     20 format(F10.5, F10.5, F10.5)
@@ -576,7 +598,7 @@ contains
                              & (pos(m, 1, 2) - pos(m, 2, 2))**2 +&
                              & (pos(m, 1, 3) - pos(m, 2, 3))**2
             print *, "desiredBondLength: ",sqrt(desiredBondLengthSq), &
-                                    &"currBondLength: ",sqrt(currBondLengthSq)
+                    &"currBondLength: ",sqrt(currBondLengthSq)
         end do
         
     end subroutine testBondLengths
@@ -588,9 +610,9 @@ contains
 
         integer, intent(in) :: step
         integer, intent(inout) :: nCorr
-        real, dimension(CvvStep), intent(inout) :: Cvv
-        real, dimension(numMolecules, numDimensions, CvvStep), intent(inout) :: vStore
-        real, dimension(numMolecules, numAtomsPerMolecule, numDimensions), intent(in) :: vel
+        real(dp), dimension(CvvStep), intent(inout) :: Cvv
+        real(dp), dimension(numMolecules, numDimensions, CvvStep), intent(inout) :: vStore
+        real(dp), dimension(numMolecules, numAtomsPerMolecule, numDimensions), intent(in) :: vel
 
         real(dp), dimension(CvvStep) :: sum !Due to numerical percision reasons,
                                             !keep sum such that each dot product
@@ -641,9 +663,9 @@ contains
 
         integer, intent(in) :: step
         integer, intent(inout) :: nCorr_Rot
-        real, dimension(CvvStep), intent(inout) :: CvvRot
-        real, dimension(numMolecules, numDimensions, CvvStep), intent(inout) :: orientStore
-        real, dimension(numMolecules, numAtomsPerMolecule, numDimensions), intent(in) :: pos
+        real(dp), dimension(CvvStep), intent(inout) :: CvvRot
+        real(dp), dimension(numMolecules, numDimensions, CvvStep), intent(inout) :: orientStore
+        real(dp), dimension(numMolecules, numAtomsPerMolecule, numDimensions), intent(in) :: pos
 
         real(dp), dimension(CvvStep) :: sum !Due to numerical percision reasons,
                                             !keep sum such that each dot product
@@ -651,10 +673,8 @@ contains
                                             !this sum is added to the Cvv at the end
 
         real(dp), dimension(numDimensions) :: orientV0
-        real(dp) :: orientMagt
-        real(dp) :: orientMag0
+        real(dp) :: orientMag
         real(dp), dimension(numDimensions) :: orientVt
-        real(dp) :: dumr
         integer :: index0
         integer :: currIndex
         integer :: m,l,k,q
@@ -670,10 +690,17 @@ contains
             do k = 1, numDimensions
                 orientStore(m, k, currIndex) = pos(m, 1, k) - pos(m, 2, k)
             end do
+            orientMag = orientStore(m,1,currIndex) * orientStore(m,1,currIndex) +&
+                       &orientStore(m,2,currIndex) * orientStore(m,2,currIndex) +&
+                       &orientStore(m,3,currIndex) * orientStore(m,3,currIndex)
+            orientMag = sqrt(orientMag)
+            orientStore(m,1,currIndex) = orientStore(m,1,currIndex) / orientMag
+            orientStore(m,2,currIndex) = orientStore(m,2,currIndex) / orientMag
+            orientStore(m,3,currIndex) = orientStore(m,3,currIndex) / orientMag
         end do
 
-        !Go thorugh add add all dot products for the current step after all 
-        !vStores have been filled once
+        !Go thorugh and add to the sum array the second Legendre polynomial of the 
+        !dot product of unit vectors of orientation 
         if (step.GE.CvvStep) then
             nCorr_Rot = nCorr_Rot + 1
             index0 = mod(step, CvvStep) + 1
@@ -681,20 +708,12 @@ contains
                 orientV0(1) = orientStore(m,1,index0)
                 orientV0(2) = orientStore(m,2,index0)
                 orientV0(3) = orientStore(m,3,index0)
-                orientMag0 = sqrt(dot(orientV0, orientV0))
-                orientV0(1) = orientV0(1) / orientMag0
-                orientV0(2) = orientV0(2) / orientMag0
-                orientV0(3) = orientV0(3) / orientMag0
                 do q = 1, CvvStep
                     currIndex = mod(q - 1 + step, CvvStep) + 1
                     orientVt(1) = orientStore(m,1,currIndex)
                     orientVt(2) = orientStore(m,2,currIndex)
                     orientVt(3) = orientStore(m,3,currIndex)
-                    orientMagt = sqrt(dot(orientVt, orientVt))
-                    orientVt(1) = orientVt(1) / orientMagt
-                    orientVt(2) = orientVt(2) / orientMagt
-                    orientVt(3) = orientVt(3) / orientMagt
-                    sum(q) = sum(q) + 0.5 * (3 * dot(orientV0, orientVt)**2 - 1)
+                    sum(q) = sum(q) + 0.5 * (3.0 * dot(orientV0, orientVt)**2 - 1.0)
                 end do
             end do
         end if
@@ -710,9 +729,9 @@ contains
 
         integer, intent(in) :: step
         integer, intent(inout) :: nCorr_MSD
-        real, dimension(MSDStep), intent(inout) :: MSD
-        real, dimension(numMolecules, numDimensions, MSDStep), intent(inout) :: pStore
-        real, dimension(numMolecules, numAtomsPerMolecule, numDimensions), intent(in) :: pos
+        real(dp), dimension(MSDStep), intent(inout) :: MSD
+        real(dp), dimension(numMolecules, numDimensions, MSDStep), intent(inout) :: pStore
+        real(dp), dimension(numMolecules, numAtomsPerMolecule, numDimensions), intent(in) :: pos
 
         integer :: index0
         integer :: currIndex
@@ -721,23 +740,20 @@ contains
         real(dp), dimension(MSDStep) :: sum !Due to numerical percision reasons,
                                             !keep sum such that each dot product
                                             !is successfully added, then
-                                            !this sum is added to the Cvv at the end
+                                            !this sum is added to the MSD at the end
 
         do q = 1, MSDStep
             sum(q) = 0.0
         end do
 
+        !Index of the pStore array you will store position information to this 
+        !step
         currIndex = mod(step - 1, MSDStep) + 1 
 
         !Store the position of each molecule
         do m = 1, numMolecules
             do k = 1, numDimensions
-                if (k == 3) then
-                    !print *, "pos1: ", pos(m,1,k)
-                    !print *, "pos2: ", pos(m,2,k), "m:", m
-                end if
                 pStore(m, k, currIndex) = 0.5 * (pos(m, 1, k) + pos(m, 2, k))
-                !print *, "pStore:",pStore(m,k,currIndex), "k = ", k
             end do
         end do
 
@@ -754,7 +770,6 @@ contains
                     end do
                 end do
             end do
-            !print *, "sum(1) MSD: ", sum(1)
         end if
 
         !Add the summed value to the total MSD

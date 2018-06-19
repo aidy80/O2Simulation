@@ -1,12 +1,13 @@
 !Aidan Fike
 !March 2, 2017
 !Program to simulate diatomic oxygen molecules in a cube based on lennard jones 
-!iteractions. Program will simulate molecules for 100,000 4fs timesteps
+!iteractions. Program will simulate molecules for 100,000 4fs timesteps in a NVT
+!ensemble. Temperature will begin at 320K and be gradually scaled to 77K
 
 program nvtSim
     implicit none
 
-    integer, parameter :: dp = kind(1.0)!Give reals double precision
+    integer, parameter :: dp = selected_real_kind(15, 307)!Give reals double precision
 
     integer, parameter :: numAtomsPerMolecule = 2 !Number of atoms in each Oxygen 
     integer :: numMolecules !Number of molecules in this simulation
@@ -15,6 +16,7 @@ program nvtSim
     !Position and Velocity information about atoms in the system 
     real(dp), dimension(:, :, :), allocatable :: pos, vel !pos: [m], vel: [m/s]
     real(dp), dimension(:, :, :), allocatable :: oldPos, oldVel !oldPos: [m]
+                                                                !oldVel: [m/s]
 
     !Force exerted on atoms at a given timestep
     real(dp), dimension(:, :, :), allocatable :: force ![N] 
@@ -44,7 +46,8 @@ program nvtSim
     real(dp) :: vOld ![m/s] Temp variable for velocity
     real(dp) :: Fmag ![N] Used to hold the magnitude of force btwn two atoms
     real(dp) :: kineticEnergy ![J] The total kinetic energy of the system
-    real(dp) :: addedKE
+    real(dp) :: addedKE ![J] Kinetic Energy sum to prevent numerical 
+                        !percision issues
     real(dp) :: oldKE
 
     !Used to time simulation
@@ -61,9 +64,9 @@ program nvtSim
 
     !Constants
     real(dp), parameter :: oMass = 2.66E-26 ![kg] Mass of an oxygen atom
-    real(dp),parameter :: invOMass = 1 / oMass
+    real(dp),parameter :: invOMass = 1.0 / oMass
     real(dp), parameter :: Bolz = 1.38064852E-23 ![J/K] Boltzmann constant
-    real(dp), parameter :: epsilon = 48 * Bolz![J] Minimum in the 
+    real(dp), parameter :: epsilon = 48.0 * Bolz![J] Minimum in the 
                                                  !    Lennard Jones equation
     real(dp), parameter :: sigma = 3.006E-10 ![m]. Constant in the Lennard 
                                             !     Jones equation
@@ -95,7 +98,7 @@ program nvtSim
 
     integer, parameter :: zeroMomentTimeStep = 100 !Number of timesteps 
                                                    !between momentum-zeroing
-    integer, parameter :: numTrajSteps = 10 !Number of timesteps between 
+    integer, parameter :: numTrajSteps = 100 !Number of timesteps between 
                                             !trajectory outputs to .ttr file
     integer, parameter :: temperatureStep = 205 !Number of timesteps between 
                                                 !temperature decrements
@@ -114,6 +117,7 @@ program nvtSim
     open(unit=93, file='NVTO2_kineticEnergy.dat')
     open(unit=94, file='NVTO2.gro')
     open(unit=95, file='NVTO2_final.gro')
+    open(unit=96, file='NVTO2_temperature.dat')
     
     !Read in header information from the file
     read(11, *) nullChar
@@ -142,7 +146,7 @@ program nvtSim
     end do
 
     !Set the cutoff for LJ interation to 1/2 box size
-    cutoff = dim(1)/2
+    cutoff = dim(1)/2.0
     cutoffSq = cutoff**2
 
     !Convert read-in pos/velocity information from nm and nm/ps to m and m/s
@@ -164,6 +168,9 @@ program nvtSim
     call zeroNetMomentum(vel, numMolecules, numAtomsPerMolecule, numDimensions)
 
     do p = 1, numSteps
+        if(mod(p,100) == 0) then
+            print *, p
+        end if
         !Init force vectors to zero
         call initZero(force, numAtoms, numDimensions)
 
@@ -206,7 +213,7 @@ program nvtSim
                         !Calculate the resulting force on the current two atoms 
                         !based on the lennard jones potential between them. Calculated 
                         !using the negative gradient
-                        Fmag = twentyFourEps * (2 * sigmaDistTwelve - sigmaDistSix)
+                        Fmag = twentyFourEps * (2.0 * sigmaDistTwelve - sigmaDistSix)
 
                         !If the distance between the two atoms is below the cutoff, 
                         !calculate the force exerted on each of them based on the 
@@ -296,32 +303,31 @@ program nvtSim
 
             !Update velocity baseed on changed velocity and calc KE 
             !post-bondlength adjustments
-            oldKE = kineticEnergy
+            !oldKE = kineticEnergy
             addedKE = 0.0
             do l = 1, numAtomsPerMolecule
                 do k = 1, numDimensions
-                    vOld = vel(m,l,k)
                     vel(m,l,k) = (pos(m,l,k) - oldPos(m,l,k)) / timeStep
-                    vel(m,l,k) = 0.5 * (vOld + vel(m,l,k))
-                    addedKE = addedKE + 0.5 * vel(m,l,k)**2 * oMass 
+                    addedKE = addedKE + 0.5 * (0.5 * (oldVel(m,l,k) + vel(m,l,k)))**2 * oMass 
                 end do
             end do
 
             kineticEnergy = kineticEnergy + addedKE
 
-            if ((kineticEnergy - oldKE) == 0) then
-                print *, "uhoh", vel(m,l,k) *0.5*oMass
-            end if
+            !if ((kineticEnergy - oldKE) == 0) then
+            !    print *, "uhoh", vel(m,l,k) *0.5*oMass
+            !end if
         end do
         
         !Find the kinetic energy of the system and 
         !the total energy of the system
         totEnergy = Epot + kineticEnergy
 
-        if (p == 1) then
-            print *, "desiredKinetic: ", 0.5 * 5 * desiredTemperature * Bolz
-            print *, "Actual: ", kineticEnergy
-        end if
+        write(91, *) (timestep * real(p)), totEnergy
+        write(92, *) (timestep * real(p)), Epot
+        write(93, *) (timestep * real(p)), kineticEnergy
+        write(96, *) (timestep * real(p)), (kineticEnergy * 2.0) / &
+                                              &(5.0 * real(numMolecules) * Bolz)
 
         !Gradually scale down the temperature until it reaches a 
         !constant Temperature of 77K
@@ -366,16 +372,12 @@ program nvtSim
                 avgPos(1) = 0.5 * (pos(m,1,1) + pos(m,2,1))
                 avgPos(2) = 0.5 * (pos(m,1,2) + pos(m,2,2))
                 avgPos(3) = 0.5 * (pos(m,1,3) + pos(m,2,3))
-                write(95, 10) m, "OXY", "O1", 2*(m-1) + (l-1) + 1, &
-                    &(pos(m,1,1) * 1E9),&
-                    &(pos(m,1,2) * 1E9),&
-                    &(pos(m,1,3) * 1E9),&
+                write(95, 10) m, "OXY", "O1", 2*(m-1) + 1, &
+                    &(pos(m,1,1) * 1E9), (pos(m,1,2) * 1E9),(pos(m,1,3) * 1E9),&
                     &vel(m,1,1) * 1E-3, vel(m,1,2) * 1E-3, vel(m,1,3) * 1E-3
 
-                write(95, 10) m, "OXY", "O2", 2*(m-1) + (l-1) + 1, &
-                    &(pos(m,2,1) * 1E9),&
-                    &(pos(m,2,2) * 1E9),&
-                    &(pos(m,2,3) * 1E9),&
+                write(95, 10) m, "OXY", "O2", 2*(m-1) + 2, &
+                    &(pos(m,2,1) * 1E9),(pos(m,2,2) * 1E9),(pos(m,2,3) * 1E9),&
                     &vel(m,2,1) * 1E-3, vel(m,2,2) * 1E-3, vel(m,2,3) * 1E-3
             end do
             write(95, 20) dim(1) * 1E9, dim(1) * 1E9, dim(1) * 1E9
@@ -395,9 +397,11 @@ program nvtSim
     close (unit=93)
     close (unit=94)
     close (unit=95)
+    close (unit=96)
 
     CALL cpu_time(end_time)
-    print *, "Time usage:", end_time - start_time, " seconds"
+    print *, "Time usage:", (end_time - start_time)/60.0, " minutes", &
+                            &mod((end_time - start_time),60.0), " seconds"
 
     30 format(I5)
     20 format(F10.5, F10.5, F10.5)
@@ -498,7 +502,8 @@ contains
         integer :: m,l,k
 
         !Use equipartition thm to find the current temperature of the system
-        currTemp = (kineticEnergy * 2.0D0) / (degreesFreedom * numMolecules * Bolz)
+        currTemp = (kineticEnergy * 2.0D0) / &
+                        &(real(degreesFreedom) * real(numMolecules) * Bolz)
         tempScale = sqrt(desiredTemperature / currTemp)
 
         !TESTING
@@ -557,8 +562,8 @@ contains
 
         do m = 1, numMolecules
             currBondLengthSq = (pos(m, 1, 1) - pos(m, 2, 1))**2 +&
-                                                & (pos(m, 1, 2) - pos(m, 2, 2))**2 +&
-                                                & (pos(m, 1, 3) - pos(m, 2, 3))**2
+                             & (pos(m, 1, 2) - pos(m, 2, 2))**2 +&
+                             & (pos(m, 1, 3) - pos(m, 2, 3))**2
             print *, "desiredBondLength: ",sqrt(desiredBondLengthSq), &
                     &"currBondLength: ",sqrt(currBondLengthSq)
         end do
@@ -616,5 +621,4 @@ contains
         print *, "Theoretical minimum potential, -epsilon:", epsilon * (-1.0)
         print *, "Measured (sigma, epsilon): (", minDistance, minPotential, ")"
     end subroutine
-
 end program nvtSim
