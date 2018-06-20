@@ -37,7 +37,7 @@ program nveSim
     real(dp), parameter :: desiredBondLength = 1.208E-10 ![m]Bond length betweem 
                                                          !oxygen atoms
     real(dp), parameter :: desiredBondLengthSq = desiredBondLength**2![m^2]
-    real(dp), parameter :: allowedError = 1.0E-13 ![m]Allowed error between actual 
+    real(dp), parameter :: allowedError = 1.0E-8 ![m]Allowed error between actual 
                                                   !bond length and desired
     real(dp) :: currError
 
@@ -100,7 +100,7 @@ program nveSim
     real(dp) :: cutoffSq ![m^2] The cutoff radius squared
     real(dp) :: twentyFourEps = 24.0 * epsilon ![J] Epsilon*24. 
                                                !        Used for optimization
-    integer, parameter :: numSteps = 50000 !Number of timesteps in the program
+    integer, parameter :: numSteps = 10000 !Number of timesteps in the program
 
     integer :: convergeCount = 0 !Counts number of iterations
     logical :: hasConverge = .false. !Used in iterative while loop
@@ -140,10 +140,11 @@ program nveSim
     open(unit=93, file='NVEO2_kineticEnergy.dat')
     open(unit=94, file='NVEO2.gro')
     open(unit=95, file='NVEO2_final.gro')
-    open(unit=96, file='TCFO2.dat')
+    open(unit=96, file='TCFO2Norm.dat')
     open(unit=97, file='grO2.dat')
     open(unit=98, file='MSDO2.dat')
     open(unit=99, file='TCFRotO2.dat')
+    open(unit=100, file='TCFO2.dat')
     
     !Read in header information from the file
     read(11, *) nullChar
@@ -225,7 +226,7 @@ program nveSim
         end if
 
         !Init force vectors to zero
-        call initZero(force, numAtoms, numDimensions)
+        call initZero(force, numMolecules, numAtomsPerMolecule, numDimensions)
 
         !Adjust the velocities in the system such that the net velocity 
         !in each direction is zero. This prevents wandering ice-cube problem
@@ -254,35 +255,29 @@ program nveSim
 
                         distanceSq = distance(1)**2 + distance(2)**2 + distance(3)**2
 
-                        sigmaDistTwo = sigmaSq / distanceSq
-                        sigmaDistSix = sigmaDistTwo**3
-                        sigmaDistTwelve = sigmaDistSix**2
-
-                        !Calc potential from lennard jones equation between the 
-                        !current pair of atoms and add it to the current 
-                        !potential energy sum
-                        potential = fourEps * (sigmaDistTwelve - sigmaDistSix)
-                        potentialSum = potentialSum + potential
-
-                        !Calculate the resulting force on the current two atoms 
-                        !based on the lennard jones potential between them. Calculated 
-                        !using the negative gradient
-                        Fmag = twentyFourEps * (2.0 * sigmaDistTwelve - sigmaDistSix)
-
                         !If the distance between the two atoms is below the cutoff, 
                         !calculate the force exerted on each of them based on the 
                         !lennard jones potential
                         if (distanceSq < cutoffSq) then
+                            sigmaDistTwo = sigmaSq / distanceSq
+                            sigmaDistSix = sigmaDistTwo**3
+                            sigmaDistTwelve = sigmaDistSix**2
+
+                            !Calc potential from lennard jones equation between the 
+                            !current pair of atoms and add it to the current 
+                            !potential energy sum
+                            potential = fourEps * (sigmaDistTwelve - sigmaDistSix)
+                            potentialSum = potentialSum + potential
+
+                            !Calculate the resulting force on the current two atoms 
+                            !based on the lennard jones potential between them. Calculated 
+                            !using the negative gradient
+                            Fmag = twentyFourEps * (2.0 * sigmaDistTwelve - sigmaDistSix)
+
+
                             do k = 1, numDimensions
-                                dumr = force(i,m,k)
                                 force(i, m, k) = force(i, m, k) + &
                                                     &Fmag * (distance(k) / distanceSq)
-                                if((dumr - force(i,m,k)) == 0) then
-                                    !print *, "Force problem", force(i,m,k), Fmag * (distance(k) / distanceSq)
-                                else 
-                                    !print *, "No problem", force(i,m,k), Fmag * (distance(k) / distanceSq)
-                                end if
-
                                 force(j, l, k) = force(j, l, k) - &
                                                     &Fmag * (distance(k) / distanceSq)
                             end do
@@ -296,11 +291,6 @@ program nveSim
             end do
             oldPotential = Epot
             Epot = Epot + potentialSum
-            if ((oldPotential - Epot) == 0) then
-                !print *, "Did not work: ", Epot, potentialSum
-            else
-                !print *, "Did add:", Epot, potentialSum
-            end if
         end do
 
         !Use the leap-frog verlet algorithm to calculate new position and 
@@ -344,7 +334,7 @@ program nveSim
 
                 !Find the error between the current bond 
                 !length and desired bond length
-                currError = ABS(currBondLengthSq - desiredBondLengthSq) 
+                currError = ABS(currBondLengthSq - desiredBondLengthSq) / desiredBondLengthSq
 
                 !Repeat the iteration until the bond is within 1E-18 of the desired 
                 !length or the iteration occurs 500 times
@@ -440,11 +430,14 @@ program nveSim
     end do
 
     !Write information about the TCF
-    CvvOne = Cvv(1)/real(nCorr)
+    CvvOne = Cvv(1)/(3.0 * real(nCorr))
     do m = 1, CvvStep
-        write(96, *) (real(m) * timestep) * 1e12, (Cvv(m)/real(nCorr)) / CvvOne
-        diffusionCoeff = diffusionCoeff + (Cvv(m) / real(nCorr)) * timestep
+        write(96, *) (real(m) * timestep) * 1e12, (Cvv(m)/(3.0 * real(nCorr))) / CvvOne
+        write(100, *) (real(m) * timestep) * 1e12, (Cvv(m)/(3.0 * real(nCorr))) 
+        diffusionCoeff = diffusionCoeff + (Cvv(m) / (3.0 * real(nCorr))) * timestep
     end do
+    print *, "Desired Cvv1", 3.0 * Bolz * temperature / (oMass * 2.0),&
+            &"Actual Cvv1", Cvv(1) / real(nCorr)
     print *, "DiffusionCoefficient: ", diffusionCoeff * 1e4
 
     !Write information about the TCF
@@ -501,19 +494,22 @@ contains
     !Helper subroutine to initialize a 2D array of dimension 
     !(arraySize, numDimensions) with all zeros. "array" is the 2D array passed 
     !and returned with all zeros
-    subroutine initZero(array, arraySize, numDimensions)
+    subroutine initZero(array, numMolecules, numAtomsPerMolecule, numDimensions)
         implicit none
         
-        integer, intent(in) :: arraySize
+        integer, intent(in) :: numMolecules
+        integer, intent(in) :: numAtomsPerMolecule
         integer, intent(in) :: numDimensions
-        real(dp), dimension(arraySize, numDimensions), intent(inout) :: array
+        real(dp), dimension(numMolecules,numAtomsPerMolecule, numDimensions), &
+                                                        &intent(inout) :: array
 
-        integer :: i
-        integer :: k
+        integer :: m,l,k
 
-        do i = 1, arraySize 
-            do k = 1, numDimensions
-                array(i,k) = 0.0
+        do m = 1, numMolecules 
+            do l = 1, numAtomsPerMolecule
+                do k = 1, numDimensions
+                    array(m,l,k) = 0.0
+                end do
             end do
         end do
 
@@ -652,7 +648,7 @@ contains
 
         !Add sums to Cvv
         do q = 1, CvvStep
-            Cvv(q) = Cvv(q) + sum(q) / real(numMolecules*numDimensions)
+            Cvv(q) = Cvv(q) + sum(q) / real(numMolecules)
         end do
     end subroutine TCF
 

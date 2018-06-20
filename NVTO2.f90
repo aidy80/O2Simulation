@@ -35,7 +35,7 @@ program nvtSim
     real(dp), parameter :: desiredBondLength = 1.208E-10 ![m]Bond length betweem 
                                                          !oxygen atoms
     real(dp), parameter :: desiredBondLengthSq = desiredBondLength**2![m^2]
-    real(dp), parameter :: allowedError = 1.0E-13 ![m]Allowed error between actual 
+    real(dp), parameter :: allowedError = 1.0E-8 ![m]Allowed error between actual 
                                                   !bond length and desired
     real(dp) :: currError
 
@@ -46,8 +46,11 @@ program nvtSim
     real(dp) :: vOld ![m/s] Temp variable for velocity
     real(dp) :: Fmag ![N] Used to hold the magnitude of force btwn two atoms
     real(dp) :: kineticEnergy ![J] The total kinetic energy of the system
+    real(dp) :: kineticEnergyScale ![J] The total kinetic energy of the system
     real(dp) :: addedKE ![J] Kinetic Energy sum to prevent numerical 
                         !percision issues
+    real(dp) :: addedKEScale ![J] Kinetic Energy sum to prevent numerical 
+                             !percision issues
     real(dp) :: oldKE
 
     !Used to time simulation
@@ -172,7 +175,7 @@ program nvtSim
             print *, p
         end if
         !Init force vectors to zero
-        call initZero(force, numAtoms, numDimensions)
+        call initZero(force, numMolecules, numAtomsPerMolecule, numDimensions)
 
         !Adjust the velocities in the system such that the net velocity 
         !in each direction is zero. This prevents wandering ice-cube problem
@@ -182,6 +185,7 @@ program nvtSim
 
         Epot = 0.0
         kineticEnergy = 0.0
+        kineticEnergyScale = 0.0
 
         !Compute Force between each pair of atoms if their distance is below
         !the cutoff radius. Each pair is evaluated only once
@@ -200,25 +204,25 @@ program nvtSim
 
                         distanceSq = distance(1)**2 + distance(2)**2 + distance(3)**2
 
-                        sigmaDistTwo = sigmaSq / distanceSq
-                        sigmaDistSix = sigmaDistTwo**3
-                        sigmaDistTwelve = sigmaDistSix**2
-
-                        !Calc potential from lennard jones equation between the 
-                        !current pair of atoms and add it to the current 
-                        !potential energy sum
-                        potential = fourEps * (sigmaDistTwelve - sigmaDistSix)
-                        Epot = Epot + potential
-
-                        !Calculate the resulting force on the current two atoms 
-                        !based on the lennard jones potential between them. Calculated 
-                        !using the negative gradient
-                        Fmag = twentyFourEps * (2.0 * sigmaDistTwelve - sigmaDistSix)
-
                         !If the distance between the two atoms is below the cutoff, 
                         !calculate the force exerted on each of them based on the 
                         !lennard jones potential
                         if (distanceSq < cutoffSq) then
+                            sigmaDistTwo = sigmaSq / distanceSq
+                            sigmaDistSix = sigmaDistTwo**3
+                            sigmaDistTwelve = sigmaDistSix**2
+
+                            !Calc potential from lennard jones equation between the 
+                            !current pair of atoms and add it to the current 
+                            !potential energy sum
+                            potential = fourEps * (sigmaDistTwelve - sigmaDistSix)
+                            Epot = Epot + potential
+
+                            !Calculate the resulting force on the current two atoms 
+                            !based on the lennard jones potential between them. Calculated 
+                            !using the negative gradient
+                            Fmag = twentyFourEps * (2.0 * sigmaDistTwelve - sigmaDistSix)
+
                             do k = 1, numDimensions
                                 force(i, m, k) = force(i, m, k) + &
                                                     &Fmag * (distance(k) / distanceSq)
@@ -279,7 +283,7 @@ program nvtSim
 
                 !Find the error between the current bond 
                 !length and desired bond length
-                currError = ABS(currBondLengthSq - desiredBondLengthSq)
+                currError = ABS(currBondLengthSq - desiredBondLengthSq) / desiredBondLengthSq
 
                 !Repeat the iteration until the bond is within 1E-18 of the desired 
                 !length or the iteration occurs 500 times
@@ -305,13 +309,16 @@ program nvtSim
             !post-bondlength adjustments
             !oldKE = kineticEnergy
             addedKE = 0.0
+            addedKEScale = 0.0
             do l = 1, numAtomsPerMolecule
                 do k = 1, numDimensions
                     vel(m,l,k) = (pos(m,l,k) - oldPos(m,l,k)) / timeStep
                     addedKE = addedKE + 0.5 * (0.5 * (oldVel(m,l,k) + vel(m,l,k)))**2 * oMass 
+                    addedKEScale = addedKEScale + 0.5 * vel(m,l,k)**2 * oMass
                 end do
             end do
 
+            kineticEnergyScale = kineticEnergyScale + addedKEScale
             kineticEnergy = kineticEnergy + addedKE
 
             !if ((kineticEnergy - oldKE) == 0) then
@@ -338,7 +345,7 @@ program nvtSim
         end if
 
         !Scale the temperature of the system down to the desired value
-        call scaleTemp(desiredTemperature, kineticEnergy, vel, numMolecules, &
+        call scaleTemp(desiredTemperature, kineticEnergyScale, vel, numMolecules, &
                                      &numAtomsPerMolecule, numDimensions, Bolz)
 
         !Output position and velocities for the trajectory file
@@ -411,19 +418,22 @@ contains
     !Helper subroutine to initialize a 2D array of dimension 
     !(arraySize, numDimensions) with all zeros. "array" is the 2D array passed 
     !and returned with all zeros
-    subroutine initZero(array, arraySize, numDimensions)
+    subroutine initZero(array, numMolecules, numAtomsPerMolecule, numDimensions)
         implicit none
         
-        integer, intent(in) :: arraySize
+        integer, intent(in) :: numMolecules
+        integer, intent(in) :: numAtomsPerMolecule
         integer, intent(in) :: numDimensions
-        real(dp), dimension(arraySize, numDimensions), intent(inout) :: array
+        real(dp), dimension(numMolecules,numAtomsPerMolecule, numDimensions), &
+                                                        &intent(inout) :: array
 
-        integer :: i
-        integer :: k
+        integer :: m,l,k
 
-        do i = 1, arraySize 
-            do k = 1, numDimensions
-                array(i,k) = 0.0
+        do m = 1, numMolecules 
+            do l = 1, numAtomsPerMolecule
+                do k = 1, numDimensions
+                    array(m,l,k) = 0.0
+                end do
             end do
         end do
 
