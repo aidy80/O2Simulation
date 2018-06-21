@@ -35,7 +35,7 @@ program nvtSim
     real(dp), parameter :: desiredBondLength = 1.208E-10 ![m]Bond length betweem 
                                                          !oxygen atoms
     real(dp), parameter :: desiredBondLengthSq = desiredBondLength**2![m^2]
-    real(dp), parameter :: allowedError = 1.0E-8 ![m]Allowed error between actual 
+    real(dp), parameter :: allowedError = 1.0E-13 ![m]Allowed error between actual 
                                                   !bond length and desired
     real(dp) :: currError
 
@@ -296,14 +296,14 @@ program nvtSim
                     if (convergeCount > 500) then
                         print *, "Did not converge"
                         hasConverge = .true.
-                    else
-                        !print *, "Did converge"
                     end if
                 end if
             end do
 
-            !call testBondLengths(pos, numMolecules, numAtomsPerMolecule, &
+            !if (m ==1) then
+                !call testBondLengths(pos, numMolecules, numAtomsPerMolecule, &
             !                                &numDimensions, desiredBondLengthSq)
+            !end if
 
             !Update velocity baseed on changed velocity and calc KE 
             !post-bondlength adjustments
@@ -376,9 +376,6 @@ program nvtSim
             write(95, *) "Final Frame of the NVT ensemble. 500 O2 molecules at 77K"
             write(95, 30) numMolecules * numAtomsPerMolecule
             do m = 1, numMolecules
-                avgPos(1) = 0.5 * (pos(m,1,1) + pos(m,2,1))
-                avgPos(2) = 0.5 * (pos(m,1,2) + pos(m,2,2))
-                avgPos(3) = 0.5 * (pos(m,1,3) + pos(m,2,3))
                 write(95, 10) m, "OXY", "O1", 2*(m-1) + 1, &
                     &(pos(m,1,1) * 1E9), (pos(m,1,2) * 1E9),(pos(m,1,3) * 1E9),&
                     &vel(m,1,1) * 1E-3, vel(m,1,2) * 1E-3, vel(m,1,3) * 1E-3
@@ -574,8 +571,13 @@ contains
             currBondLengthSq = (pos(m, 1, 1) - pos(m, 2, 1))**2 +&
                              & (pos(m, 1, 2) - pos(m, 2, 2))**2 +&
                              & (pos(m, 1, 3) - pos(m, 2, 3))**2
-            print *, "desiredBondLength: ",sqrt(desiredBondLengthSq), &
-                    &"currBondLength: ",sqrt(currBondLengthSq)
+            if (ABS(sqrt(desiredBondLengthSq) - sqrt(currBondLengthSq)).GE.1.0E-14) then
+                print *, "desiredBondLength: ",sqrt(desiredBondLengthSq), &
+                        &"currBondLength: ",sqrt(currBondLengthSq)
+            else if (p==500) then
+                print *, "desiredBondLength: ",sqrt(desiredBondLengthSq), &
+                        &"currBondLength: ",sqrt(currBondLengthSq)
+            end if
         end do
         
     end subroutine testBondLengths

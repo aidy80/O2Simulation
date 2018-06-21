@@ -1,14 +1,58 @@
 !Aidan Fike
 !March 2, 2017
 !Program to simulate diatomic oxygen molecules in a cube based on lennard jones 
-!iteractions. Program will simulate molecules for 50,000 4fs timesteps in an 
-!NVE ensemble
+!iteractions. Program will simulate molecules for 150,000 4fs timesteps in an 
+!NVT ensemble which scales from 320K-77K then enters an NVE ensemble
 
 program nveSim
     implicit none
 
     integer, parameter :: dp = selected_real_kind(15, 307)!Give reals double precision
 
+    !Iterators
+    integer :: i, j, k, m, l, n, p
+
+    !Constants
+    integer, parameter :: numDimensions = 3 !Dimension of position 
+                                            !and velocity space
+    real(dp), parameter :: oMass = 2.66E-26 ![kg] Mass of an oxygen atom
+    real(dp),parameter :: invOMass = 1.0 / oMass ![m^(-1)]
+    real(dp), parameter :: Bolz = 1.38064852E-23 ![J/K] Boltzmann constant
+    real(dp), parameter :: epsilon = 48.0 * Bolz![J] Minimum in the 
+                                                 !    Lennard Jones equation
+    real(dp), parameter :: desiredBondLength = 1.208E-10 ![m]Bond length betweem 
+                                                         !oxygen atoms
+    real(dp), parameter :: desiredBondLengthSq = desiredBondLength**2![m^2]
+    real(dp), parameter :: allowedError = 1.0E-13 ![]Allowed error between actual 
+                                                  !bond length and desired
+    real(dp), parameter :: sigma = 3.006E-10 ![m]. Constant in the Lennard 
+                                            !     Jones equation
+    real(dp), parameter :: sigmaSq = sigma**2 ![m^2] Sigma squared
+    real(dp) :: cutoff ![m] Cutoff distance for short-range interaction
+    real(dp), parameter :: timeStep = 4.0E-15 ![s] Time between calculations
+    real(dp), parameter :: fourEps = 4.0 * epsilon ![J] Epsilon*4. Used for optimization
+    real(dp) :: cutoffSq ![m^2] The cutoff radius squared
+    real(dp), parameter :: twentyFourEps = 24.0 * epsilon ![J] Epsilon*24. 
+                                                          !Used for optimization
+    real(dp), parameter :: initTemperature = 320.0 ![K] initial const temperature 
+                                                    !of the system
+    real(dp), parameter :: finalTemperature = 77.0 ![K] final temperature of 
+                                                    !the system
+                                               
+    integer, parameter :: CvvStep = 500 !Number of items in Cvv
+    integer, parameter :: MSDStep = 500 !Number of items in MSD
+    integer, parameter :: numTotSteps = 170000 !Number of timesteps in the program
+    integer, parameter :: numNVTSteps = 150000 !Number of timesteps in the program
+    integer, parameter :: numConstSteps = 50000 !Number of timesteps that the 
+                                                !system is equilibrated at a 
+                                                !constant temperature
+    integer, parameter :: zeroMomentTimeStep = 100 !Number of timesteps 
+                                                   !between momentum-zeroing
+    integer, parameter :: numTrajSteps = 100 !Number of timesteps between 
+                                             !trajectory outputs to .ttr file
+    integer, parameter :: temperatureStep = 205 !Number of timesteps between 
+                                                !temperature decrements
+    
     integer, parameter :: numAtomsPerMolecule = 2 !Number of atoms in each Oxygen 
     integer :: numMolecules !Number of molecules in this simulation
     integer :: numAtoms !Number of atoms in the simulation
@@ -20,26 +64,17 @@ program nveSim
 
     !Force exerted on atoms at a given timestep
     real(dp), dimension(:, :, :), allocatable :: force ![N] 
+
+    !Records distances between different atoms
     real(dp), dimension(:), allocatable :: distBins ![]
 
-    integer, parameter :: numDimensions = 3 !Dimension of position 
-                                            !and velocity space
-    integer, parameter :: CvvStep = 500 !Number of items in Cvv
-    integer, parameter :: MSDStep = 500 !Number of items in MSD
-
-    real(dp), dimension(numDimensions) :: pastBondLength !Holds bond length of an 
+    real(dp), dimension(numDimensions) :: pastBondLength ![m]Holds bond length of an 
                                                          !O2 in its previous iteration
-    real(dp), dimension(numDimensions) :: currBondLength !Holds current bond length of an O2
-    real(dp) :: currBondLengthSq
+    real(dp), dimension(numDimensions) :: currBondLength ![m]Holds current bond length of an O2
+    real(dp) :: currBondLengthSq ![m^2] Squared bondLength
     real(dp), dimension(numDimensions) :: avgPos !Used to hold median bond position
     real(dp) :: lambda!Coefficient which must be solved for through iteration
-    
-    real(dp), parameter :: desiredBondLength = 1.208E-10 ![m]Bond length betweem 
-                                                         !oxygen atoms
-    real(dp), parameter :: desiredBondLengthSq = desiredBondLength**2![m^2]
-    real(dp), parameter :: allowedError = 1.0E-13 ![m]Allowed error between actual 
-                                                  !bond length and desired
-    real(dp) :: currError
+    real(dp) :: currError!Error between current bondLength and desired bondLength
 
     real(dp) :: Epot ![J] Potential of the entire system
     real(dp) :: totEnergy ![J] Total energy of the system
@@ -49,9 +84,15 @@ program nveSim
     real(dp) :: vSQ ![(m/s)^2] Square velocity of a given atom
     real(dp) :: vOld ![m/s] Temp variable for velocity
     real(dp) :: Fmag ![N] Used to hold the magnitude of force btwn two atoms
-    real(dp) :: kineticEnergy ![J] The total kinetic energy of the system
+    real(dp) :: kineticEnergy ![J] The total kinetic energy of the system at time t
+    real(dp) :: kineticEnergyScale ![J] The total kinetic energy of the 
+                                   !system at time t+0.5dt
     real(dp) :: addedKE ![J] Sum used to calc KE. Used to avoid     
                         !numerical percision issues
+    real(dp) :: addedKEScale ![J] Sum used to calc KEScale. Used to avoid     
+                        !numerical percision issues
+
+    real(dp) :: desiredTemperature = initTemperature
 
     !Used to time simulation
     real :: start_time
@@ -60,10 +101,16 @@ program nveSim
     !Used to record the distance between two atoms
     real(dp), dimension(numDimensions) :: distance ![m]
     real(dp) :: distanceSq ![m^2]
+    real(dp) :: sigmaDistTwo![]. (sigma/(distance between two atoms))**2. 
+    real(dp) :: sigmaDistSix ![]. (sigma/(distance between two atoms))**6. 
+    real(dp) :: sigmaDistTwelve![]. (sigma/(distance between two atoms))**12.  
+    real(dp), dimension(numDimensions) :: dim![m] Size of each wall 
+                                             !of the cubic enclosure
 
-    real(dp), dimension(CvvStep) :: Cvv
-    real(dp), dimension(CvvStep) :: CvvRot
-    real(dp) :: CvvOne = 0
+    !Variables to store information needed to calculate TCF, Cvv, TCFRotational
+    real(dp), dimension(CvvStep) :: Cvv !Stores the sum of Cvvs calculations
+    real(dp), dimension(CvvStep) :: CvvRot !Stores the sum of CvvRot calculations
+    real(dp) :: CvvOne = 0 
     real(dp) :: CvvOneRot = 0
     real(dp), dimension(MSDStep) :: MSD
     real(dp), dimension(:, :, :), allocatable :: vStore
@@ -74,43 +121,8 @@ program nveSim
     integer :: nCorr_Rot = 0!Used to count the number of times CvvRot is added to 
     real(dp) :: diffusionCoeff = 0!Diffusion coefficient to be calcualted
 
-    !Iterators
-    integer :: i, j, k, m, l, n, p
-    character :: oxygenChar*2
-
-    !Constants
-    real(dp), parameter :: oMass = 2.66E-26 ![kg] Mass of an oxygen atom
-    real(dp),parameter :: invOMass = 1.0 / oMass
-    real(dp), parameter :: Bolz = 1.38064852E-23 ![J/K] Boltzmann constant
-    real(dp), parameter :: epsilon = 48.0 * Bolz![J] Minimum in the 
-                                                 !    Lennard Jones equation
-    real(dp), parameter :: sigma = 3.006E-10 ![m]. Constant in the Lennard 
-                                            !     Jones equation
-    real(dp), parameter :: sigmaSq = sigma**2 ![m^2] Sigma squared
-    real(dp) :: sigmaDistTwo![]. (sigma/(distance between two atoms))**2. 
-    real(dp) :: sigmaDistSix ![]. (sigma/(distance between two atoms))**6. 
-    real(dp) :: sigmaDistTwelve![]. (sigma/(distance between two atoms))**12.  
-    real(dp), dimension(numDimensions) :: dim![m] Size of each wall 
-                                             !of the cubic enclosure
-    real(dp), parameter :: temperature = 77.0 ![K] final temperature of 
-
-    real :: cutoff ![m] Cutoff distance for short-range interaction
-    real, parameter :: timeStep = 4.0E-15 ![s] Time between calculations
-    real(dp) :: fourEps = 4.0 * epsilon ![J] Epsilon*4. Used for optimization
-    real(dp) :: cutoffSq ![m^2] The cutoff radius squared
-    real(dp) :: twentyFourEps = 24.0 * epsilon ![J] Epsilon*24. 
-                                               !        Used for optimization
-    integer, parameter :: numSteps = 10000 !Number of timesteps in the program
-
     integer :: convergeCount = 0 !Counts number of iterations
     logical :: hasConverge = .false. !Used in iterative while loop
-
-    integer, parameter :: zeroMomentTimeStep = 100 !Number of timesteps 
-                                                   !between momentum-zeroing
-    integer, parameter :: numTrajSteps = 100 !Number of timesteps between 
-                                             !trajectory outputs to .ttr file
-
-    real(dp) :: dumr !Dummy variable used for testing
 
     !Set up data for finding g(r)
     real(dp), parameter :: delR = 0.003e-9
@@ -124,22 +136,27 @@ program nveSim
     real(dp) :: rLower 
     real(dp) :: rUpper
     real(dp) :: shellVol
+
+    !Garbage variables
     character :: nullChar
     character :: nullChar1
     integer :: nullInt
     integer :: nullInt1
+    real(dp) :: dumr
+
 
     CALL cpu_time(start_time)
 
     !Open file containing position and velocity information 
-    !about argon atoms in the cubic boundary from argon.gro
-    open(unit=11, file='NVTO2_final.gro') 
-    open(unit=90, file='NVEO2_temperature.dat')
-    open(unit=91, file='NVEO2_totEnergy.dat')
-    open(unit=92, file='NVEO2_potentialEnergy.dat')
-    open(unit=93, file='NVEO2_kineticEnergy.dat')
-    open(unit=94, file='NVEO2.gro')
-    open(unit=95, file='NVEO2_final.gro')
+    !about oxygen molecules and several files to save the temperature of
+    !the system and analysis tests such as TCF, and MSD
+    open(unit=11, file='oxygenInit.gro') 
+    open(unit=90, file='Sim_temperature.dat')
+    open(unit=91, file='Sim_totEnergy.dat')
+    open(unit=92, file='Sim_potentialEnergy.dat')
+    open(unit=93, file='Sim_kineticEnergy.dat')
+    open(unit=94, file='Sim.gro')
+    open(unit=95, file='Sim_final.gro')
     open(unit=96, file='TCFO2Norm.dat')
     open(unit=97, file='grO2.dat')
     open(unit=98, file='MSDO2.dat')
@@ -220,8 +237,8 @@ program nveSim
         bins(i) = 0
     end do
 
-    do p = 1, numSteps
-        if (mod(p,100) == 0) then
+    do p = 1, numTotSteps
+        if (mod(p,500) == 0) then
             print *, p
         end if
 
@@ -236,6 +253,7 @@ program nveSim
 
         Epot = 0.0
         kineticEnergy = 0.0
+        kineticEnergyScale = 0.0
 
         !Compute Force between each pair of atoms if their distance is below
         !the cutoff radius. Each pair is evaluated only once
@@ -274,7 +292,7 @@ program nveSim
                             !using the negative gradient
                             Fmag = twentyFourEps * (2.0 * sigmaDistTwelve - sigmaDistSix)
 
-
+                            !Apply calculated force the the net force for each atom
                             do k = 1, numDimensions
                                 force(i, m, k) = force(i, m, k) + &
                                                     &Fmag * (distance(k) / distanceSq)
@@ -284,12 +302,13 @@ program nveSim
                         end if
 
                         !Add current position information to g(r) data
-                        currIndex = Int(sqrt(distanceSq)/delR) + 1
-                        bins(currIndex) = bins(currIndex) + 2
+                        if (p.GE.numNVTSteps) then
+                            currIndex = Int(sqrt(distanceSq)/delR) + 1
+                            bins(currIndex) = bins(currIndex) + 2
+                        end if
                     end do
                 end do
             end do
-            oldPotential = Epot
             Epot = Epot + potentialSum
         end do
 
@@ -327,8 +346,6 @@ program nveSim
                 do k = 1, numDimensions
                     pos(m, 1, k) = pos(m, 1, k) - pastBondLength(k)*invOMass * lambda
                     pos(m, 2, k) = pos(m, 2, k) + pastBondLength(k)*invOMass * lambda
-                    !vel(m, 1, k) = vel(m, 1, k) - pastBondLength(k)*invOMass/timestep * lambda
-                    !vel(m, 2, k) = vel(m, 2, k) + pastBondLength(k)*invOMass/timestep * lambda
                     currBondLengthSq = currBondLengthSq + (pos(m, 1, k) - pos(m, 2, k))**2 
                 end do
 
@@ -336,8 +353,8 @@ program nveSim
                 !length and desired bond length
                 currError = ABS(currBondLengthSq - desiredBondLengthSq) / desiredBondLengthSq
 
-                !Repeat the iteration until the bond is within 1E-18 of the desired 
-                !length or the iteration occurs 500 times
+                !Repeat the iteration until the bond is within the allowedError 
+                !of the desired length or the iteration occurs 500 times
                 if(currError.LE.allowedError) then
                     hasConverge = .true.
                 else 
@@ -351,28 +368,38 @@ program nveSim
                 end if
             end do
 
-            if(m==1)then
-                call testBondLengths(pos, numMolecules, numAtomsPerMolecule, &
-                                            &numDimensions, desiredBondLengthSq)
-            end if
-
             !Update velocity baseed on changed velocity and calc KE 
             !post-bondlength adjustments
             addedKE = 0.0
+            addedKEScale = 0.0
             do l = 1, numAtomsPerMolecule
                 do k = 1, numDimensions
                     vel(m,l,k) = (pos(m,l,k) - oldPos(m,l,k)) / timeStep
                     addedKE = addedKE + 0.5 * (0.5*(oldVel(m,l,k) + vel(m,l,k)))**2 * oMass 
+                    addedKEScale = addedKEScale + 0.5 * vel(m,l,k)**2 * oMass
                 end do
             end do
 
             kineticEnergy = kineticEnergy + addedKE
+            kineticEnergyScale = kineticEnergyScale + addedKEScale
         end do
 
-        !Find the kinetic energy of the system and 
-        !the total energy of the system
+        !Calculate the total energy of the system
         totEnergy = Epot + kineticEnergy
 
+        !Gradually scale down the temperature until it reaches a 
+        !constant Temperature of 77K from steps 50,000 to 100,000
+        if (p.LE.(numNVTSteps - numConstSteps).AND.p.GE.numConstSteps&
+                                        &.AND.mod(p, temperatureStep) == 0) then
+            print *, "temp: ", desiredTemperature
+            desiredTemperature = desiredTemperature - 1
+        end if
+
+        !Scale the temperature of the system down to the desired value
+        if (p.LE.numNVTSteps) then
+            call scaleTemp(desiredTemperature, kineticEnergyScale, vel, numMolecules, &
+                                     &numAtomsPerMolecule, numDimensions, Bolz)
+        end if
 
         !Write energy and temperature information to files
         write(90, *) timestep * real(p), &
@@ -382,14 +409,16 @@ program nveSim
         write(93, *) (timestep * real(p)), kineticEnergy
 
         !Call analysis functions to calculate TCF for velocity, 
-        !rotation, and distance
-        call TCF(p, Cvv, nCorr, vStore, vel)
-        call Calc_MSD(p, MSD, nCorr_MSD, pStore, pos)
-        call TCFRot(p, CvvRot, nCorr_Rot, orientStore, pos)
+        !rotation, and for MSD
+        if(p.GE.numNVTSteps) then
+            call TCF(p, Cvv, nCorr, vStore, vel)
+            call Calc_MSD(p, MSD, nCorr_MSD, pStore, pos)
+            call TCFRot(p, CvvRot, nCorr_Rot, orientStore, pos)
+        end if
 
         !Output position and velocities for the trajectory file
         if (mod(p, numTrajSteps) == 0) then
-            write(94, *) "Trajectory file for NVE ensemble. 100ns total time"
+            write(94, *) "Trajectory file for O2Simulation. 100ns total time"
             write(94, 30) numMolecules * numAtomsPerMolecule
             do m = 1, numMolecules 
                 avgPos(1) = 0.5 * (pos(m,1,1) + pos(m,2,1))
@@ -410,9 +439,9 @@ program nveSim
             write(94, 20) dim(1) * 1E9, dim(1) * 1E9, dim(1) * 1E9
         end if
 
-        !Output the final frame of the NVE simulation
-        if (p == numSteps) then 
-            write(95, *) "Last frame of the NVE simulation of 500 O2 molecules."
+        !Output the final frame of the simulation
+        if (p == numTotSteps) then 
+            write(95, *) "Last frame of the simulation of 500 O2 molecules."
             write(95, 30) numMolecules * numAtomsPerMolecule
             do m = 1, numMolecules
                 avgPos(1) = 0.5 * (pos(m,1,1) + pos(m,2,1))
@@ -430,18 +459,18 @@ program nveSim
         end if
     end do
 
-    !Write information about the TCF
-    CvvOne = Cvv(1)/(3.0 * real(nCorr))
+    !Write information about the velocity TCF
+    CvvOne = Cvv(1)/(real(nCorr))
     do m = 1, CvvStep
-        write(96, *) (real(m) * timestep) * 1e12, (Cvv(m)/(3.0 * real(nCorr))) / CvvOne
-        write(100, *) (real(m) * timestep) * 1e12, (Cvv(m)/(3.0 * real(nCorr))) 
+        write(96, *) (real(m) * timestep) * 1e12, (Cvv(m)/(real(nCorr))) / CvvOne
+        write(100, *) (real(m) * timestep) * 1e12, (Cvv(m)/(real(nCorr))) 
         diffusionCoeff = diffusionCoeff + (Cvv(m) / (3.0 * real(nCorr))) * timestep
     end do
-    print *, "Desired Cvv1", 3.0 * Bolz * temperature / (oMass * 2.0),&
+    print *, "Desired Cvv1", 3.0 * Bolz * desiredTemperature / (oMass * 2.0),&
             &"Actual Cvv1", Cvv(1) / real(nCorr)
     print *, "DiffusionCoefficient: ", diffusionCoeff * 1e4
 
-    !Write information about the TCF
+    !Write information about the Rotational TCF
     CvvOneRot = CvvRot(1)/real(nCorr_Rot)
     do m = 1, CvvStep
         write(99, *) (real(m) * timestep) * 1e12, (CvvRot(m)/real(nCorr_Rot)) / CvvOneRot
@@ -457,7 +486,7 @@ program nveSim
         rLower = real(m - 1) * delR    
         rUpper = rLower + delR
         shellVol = sphereConst * (rUpper ** 3 - rLower ** 3)
-        write(97, *) (rlower + delR * 0.5)*1E9, real(bins(m)) / (real(numSteps) * &
+        write(97, *) (rlower + delR * 0.5)*1E9, real(bins(m)) / (real(numTotSteps - numNVTSteps) * &
                                                     &real(numAtoms) * shellVol)
     end do
 
@@ -492,9 +521,9 @@ program nveSim
     10 format(i5,2a5,i5,3f8.3,3f8.3)
 
 contains
-    !Helper subroutine to initialize a 2D array of dimension 
-    !(arraySize, numDimensions) with all zeros. "array" is the 2D array passed 
-    !and returned with all zeros
+    !Helper subroutine to initialize a 3D array of dimension 
+    !(numMolecules, numAtomsPerMolecule, numDimensions) with all zeros. 
+    !"array" is the 3D array passed and returned with all zeros
     subroutine initZero(array, numMolecules, numAtomsPerMolecule, numDimensions)
         implicit none
         
@@ -534,7 +563,6 @@ contains
         real(dp), dimension(numDimensions) :: netVel
         real(dp), dimension(numDimensions) :: velScale
 
-        !Find the current velocity of the system
         do k = 1, numDimensions
             netVel(k) = 0.0
         end do
@@ -573,6 +601,49 @@ contains
         dot = v1(1) * v2(1) + v1(2) * v2(2) + v1(3) * v2(3)
         return
     end function
+
+    !Scale the velocities in the system such that the system has a 
+    !temperature equal to desiredTemperature
+    subroutine scaleTemp(desiredTemperature, kineticEnergy, vel, numMolecules, &
+                                            &numAtomsPerMolecule, numDimensions,Bolz)
+        implicit none 
+    
+        real(dp), intent(in) :: kineticEnergy
+        real(dp), intent(in) :: Bolz
+        real(dp), intent(in) :: desiredTemperature
+        integer, intent(in) :: numDimensions
+        integer, intent(in) :: numAtomsPerMolecule
+        integer, intent(in) :: numMolecules
+        real(dp), dimension(numMolecules, numAtomsPerMolecule, numDimensions), &
+                                                            &intent(inout)::vel
+
+        real(dp) :: currTemp 
+        real(dp) :: tempScale
+        real(dp) :: currVel
+        real(dp) :: newKE
+        real(dp) :: nextVSq
+        real(dp) :: addedKE
+        real(dp) :: sumTotalVel
+        integer :: degreesFreedom = 5
+
+        integer :: m,l,k
+
+        !Use equipartition thm to find the current temperature of the system
+        currTemp = (kineticEnergy * 2.0D0) / &
+                        &(real(degreesFreedom) * real(numMolecules) * Bolz)
+        tempScale = sqrt(desiredTemperature / currTemp)
+
+        !Scale each velocity such that the kintic energy of the system can 
+        !be applied to the equipartition theorem to find that the system has 
+        !a temperature of "desiredTemperature"
+        do m=1, numMolecules
+            do l=1, numAtomsPerMolecule
+                do k=1, numDimensions
+                    vel(m,l,k) = vel(m,l,k) * tempScale
+                end do
+            end do
+        end do
+    end subroutine scaleTemp
 
     !Test that the Shake Algorithm successfully fixes bond length
     subroutine testBondLengths(pos, numMolecules, numAtomsPerMolecule, numDimensions,&
@@ -684,7 +755,7 @@ contains
 
         currIndex = mod(step - 1, CvvStep) + 1 
 
-        !Store record of the current velocities at the current index
+        !Store record of the current molecular orientations at the current index
         do m = 1, numMolecules
             do k = 1, numDimensions
                 orientStore(m, k, currIndex) = pos(m, 1, k) - pos(m, 2, k)
@@ -723,6 +794,7 @@ contains
         end do
     end subroutine TCFRot
 
+    !Calculate the mean square displacement at the current timestep
     subroutine Calc_MSD(step, MSD, nCorr_MSD, pStore, pos)
         implicit none
 
